@@ -348,11 +348,20 @@ export default function App() {
     e.preventDefault();
     if (!user || !newShoppingName.trim()) return;
 
+    const now = new Date();
+    let createdAt: string;
+    if (selectedMonth === now.getMonth() && selectedYear === now.getFullYear()) {
+      createdAt = now.toISOString();
+    } else {
+      createdAt = new Date(selectedYear, selectedMonth, 1, 12, 0, 0).toISOString();
+    }
+
     const { error } = await supabase.from('shopping_items').insert({
       user_id: user.id,
       name: newShoppingName.trim(),
       amount: newShoppingAmount ? parseFloat(newShoppingAmount) : null,
-      is_purchased: false
+      is_purchased: false,
+      created_at: createdAt
     });
 
     if (!error) {
@@ -658,6 +667,13 @@ export default function App() {
     });
   }, [transactions, selectedMonth, selectedYear]);
 
+  const filteredShoppingItems = useMemo(() => {
+    return shoppingItems.filter(item => {
+      const date = new Date(item.created_at);
+      return date.getMonth() === selectedMonth && date.getFullYear() === selectedYear;
+    });
+  }, [shoppingItems, selectedMonth, selectedYear]);
+
   const pieData = useMemo(() => {
     const expensesByCategory: Record<string, number> = {};
     filteredTransactions
@@ -693,15 +709,15 @@ export default function App() {
 
   const totalIncome = useMemo(() => {
     const transactionIncome = filteredTransactions.filter(t => t.type === 'income').reduce((acc, t) => acc + t.amount, 0);
-    const shoppingIncome = shoppingItems.filter(i => i.financial_type === 'income').reduce((acc, i) => acc + (i.amount || 0), 0);
+    const shoppingIncome = filteredShoppingItems.filter(i => i.financial_type === 'income').reduce((acc, i) => acc + (i.amount || 0), 0);
     return transactionIncome + shoppingIncome;
-  }, [filteredTransactions, shoppingItems]);
+  }, [filteredTransactions, filteredShoppingItems]);
 
   const totalExpense = useMemo(() => {
     const transactionExpense = filteredTransactions.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
-    const shoppingExpense = shoppingItems.filter(i => i.financial_type === 'expense').reduce((acc, i) => acc + (i.amount || 0), 0);
+    const shoppingExpense = filteredShoppingItems.filter(i => i.financial_type === 'expense').reduce((acc, i) => acc + (i.amount || 0), 0);
     return transactionExpense + shoppingExpense;
-  }, [filteredTransactions, shoppingItems]);
+  }, [filteredTransactions, filteredShoppingItems]);
 
   const balance = totalIncome - totalExpense;
 
@@ -1469,6 +1485,34 @@ export default function App() {
               className="grid grid-cols-1 xl:grid-cols-[1fr_390px] gap-6 items-start"
             >
               <div className="space-y-6">
+                {/* Month/Year Selector */}
+                <div className={`flex flex-wrap items-center justify-between gap-4 p-4 rounded-3xl border shadow-sm ${profileTheme === 'dark' ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-black/5'}`}>
+                  <div className="flex items-center gap-2">
+                    <Calendar className="w-5 h-5 text-emerald-500" />
+                    <h2 className="font-bold">Período</h2>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select 
+                      value={selectedMonth} 
+                      onChange={(e) => setSelectedMonth(parseInt(e.target.value))}
+                      className={`px-3 py-2 border rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm font-medium ${profileTheme === 'dark' ? 'bg-zinc-800 border-zinc-700' : 'bg-zinc-50 border-zinc-200'}`}
+                    >
+                      {months.map((m, i) => (
+                        <option key={m} value={i}>{m}</option>
+                      ))}
+                    </select>
+                    <select 
+                      value={selectedYear} 
+                      onChange={(e) => setSelectedYear(parseInt(e.target.value))}
+                      className={`px-3 py-2 border rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm font-medium ${profileTheme === 'dark' ? 'bg-zinc-800 border-zinc-700' : 'bg-zinc-50 border-zinc-200'}`}
+                    >
+                      {years.map(y => (
+                        <option key={y} value={y}>{y}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
                 {/* Shopping List Form */}
                 <section className={`p-6 rounded-3xl border shadow-sm ${profileTheme === 'dark' ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-black/5'}`}>
                   <h3 className="text-lg font-bold flex items-center gap-2 mb-4">
@@ -1534,7 +1578,7 @@ export default function App() {
                   <div className="space-y-3">
                     <AnimatePresence mode="popLayout">
                     {(() => {
-                      const filtered = shoppingItems.filter(item => {
+                      const filtered = filteredShoppingItems.filter(item => {
                         if (shoppingFilter === 'pending') return !item.is_purchased;
                         if (shoppingFilter === 'purchased') return item.is_purchased;
                         return true;
@@ -1605,14 +1649,14 @@ export default function App() {
                                 {!item.is_purchased && (
                                   <>
                                     <button 
-                                      onClick={() => toggleFinancialType(item, 'income')}
+                                      onClick={() => toggleFinancialType(item, item.financial_type === 'income' ? null : 'income')}
                                       className={`p-2 rounded-xl transition-all ${item.financial_type === 'income' ? 'bg-emerald-500 text-white shadow-lg' : 'text-zinc-400 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20'}`}
                                       title="Marcar como receita"
                                     >
                                       <PlusCircle className="w-4 h-4" />
                                     </button>
                                     <button 
-                                      onClick={() => toggleFinancialType(item, 'expense')}
+                                      onClick={() => toggleFinancialType(item, item.financial_type === 'expense' ? null : 'expense')}
                                       className={`p-2 rounded-xl transition-all ${item.financial_type === 'expense' ? 'bg-red-500 text-white shadow-lg' : 'text-zinc-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20'}`}
                                       title="Marcar como despesa"
                                     >
@@ -1673,18 +1717,18 @@ export default function App() {
                     <div className="flex items-center justify-between">
                       <div className="space-y-1">
                         <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Progresso</p>
-                        <p className="text-2xl font-bold">{Math.round((shoppingItems.filter(i => i.is_purchased).length / (shoppingItems.length || 1)) * 100)}%</p>
+                        <p className="text-2xl font-bold">{Math.round((filteredShoppingItems.filter(i => i.is_purchased).length / (filteredShoppingItems.length || 1)) * 100)}%</p>
                       </div>
                       <div className="text-right space-y-1">
                         <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Concluídos</p>
-                        <p className="text-lg font-bold text-emerald-500">{shoppingItems.filter(i => i.is_purchased).length} / {shoppingItems.length}</p>
+                        <p className="text-lg font-bold text-emerald-500">{filteredShoppingItems.filter(i => i.is_purchased).length} / {filteredShoppingItems.length}</p>
                       </div>
                     </div>
 
                     <div className="w-full h-2 bg-zinc-100 dark:bg-zinc-800 rounded-full overflow-hidden">
                       <motion.div 
                         initial={{ width: 0 }}
-                        animate={{ width: `${(shoppingItems.filter(i => i.is_purchased).length / (shoppingItems.length || 1)) * 100}%` }}
+                        animate={{ width: `${(filteredShoppingItems.filter(i => i.is_purchased).length / (filteredShoppingItems.length || 1)) * 100}%` }}
                         className="h-full bg-emerald-500 rounded-full"
                       />
                     </div>
@@ -1692,7 +1736,7 @@ export default function App() {
                     <div className="pt-4 border-t border-zinc-100 dark:border-zinc-800">
                       <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-2">Total Estimado (Pendente)</p>
                       <h4 className="text-xl font-bold text-emerald-600">
-                        R$ {shoppingItems.filter(i => !i.is_purchased).reduce((acc, curr) => acc + (curr.amount || 0), 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                        R$ {filteredShoppingItems.filter(i => !i.is_purchased).reduce((acc, curr) => acc + (curr.amount || 0), 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                       </h4>
                     </div>
 
