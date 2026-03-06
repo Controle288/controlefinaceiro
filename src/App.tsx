@@ -419,6 +419,20 @@ export default function App() {
     }
   };
 
+  const toggleFinancialType = async (item: ShoppingItem, financialType: 'income' | 'expense' | null) => {
+    const { error } = await supabase
+      .from('shopping_items')
+      .update({ financial_type: financialType })
+      .eq('id', item.id);
+
+    if (!error) {
+      fetchShoppingItems();
+      showSuccess(financialType ? `Item marcado como ${financialType === 'income' ? 'receita' : 'despesa'}!` : 'Marcação financeira removida!');
+    } else {
+      console.error('Erro ao atualizar marcação financeira:', error);
+    }
+  };
+
   const deleteShoppingItem = async (id: string) => {
     const { error } = await supabase.from('shopping_items').delete().eq('id', id);
     if (!error) fetchShoppingItems();
@@ -584,8 +598,18 @@ export default function App() {
     }), { entradas: 0, saidas: 0 });
   }, [annualData]);
 
-  const totalIncome = filteredTransactions.filter(t => t.type === 'income').reduce((acc, t) => acc + t.amount, 0);
-  const totalExpense = filteredTransactions.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
+  const totalIncome = useMemo(() => {
+    const transactionIncome = filteredTransactions.filter(t => t.type === 'income').reduce((acc, t) => acc + t.amount, 0);
+    const shoppingIncome = shoppingItems.filter(i => i.financial_type === 'income').reduce((acc, i) => acc + (i.amount || 0), 0);
+    return transactionIncome + shoppingIncome;
+  }, [filteredTransactions, shoppingItems]);
+
+  const totalExpense = useMemo(() => {
+    const transactionExpense = filteredTransactions.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
+    const shoppingExpense = shoppingItems.filter(i => i.financial_type === 'expense').reduce((acc, i) => acc + (i.amount || 0), 0);
+    return transactionExpense + shoppingExpense;
+  }, [filteredTransactions, shoppingItems]);
+
   const balance = totalIncome - totalExpense;
 
   const COLORS = ['#ef4444', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316', '#10b981'];
@@ -1425,13 +1449,38 @@ export default function App() {
                               </div>
                               <div className="flex items-center gap-1 group-hover:opacity-100 transition-opacity">
                                 {!item.is_purchased && (
-                                  <button 
-                                    onClick={() => convertToTransaction(item)}
-                                    className="p-2 text-zinc-400 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-xl transition-all"
-                                    title="Converter em despesa"
-                                  >
-                                    <RefreshCw className="w-4 h-4" />
-                                  </button>
+                                  <>
+                                    <button 
+                                      onClick={() => toggleFinancialType(item, 'income')}
+                                      className={`p-2 rounded-xl transition-all ${item.financial_type === 'income' ? 'bg-emerald-500 text-white shadow-lg' : 'text-zinc-400 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20'}`}
+                                      title="Marcar como receita"
+                                    >
+                                      <PlusCircle className="w-4 h-4" />
+                                    </button>
+                                    <button 
+                                      onClick={() => toggleFinancialType(item, 'expense')}
+                                      className={`p-2 rounded-xl transition-all ${item.financial_type === 'expense' ? 'bg-red-500 text-white shadow-lg' : 'text-zinc-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20'}`}
+                                      title="Marcar como despesa"
+                                    >
+                                      <MinusCircle className="w-4 h-4" />
+                                    </button>
+                                    {item.financial_type && (
+                                      <button 
+                                        onClick={() => toggleFinancialType(item, null)}
+                                        className="p-2 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-all"
+                                        title="Remover marcação"
+                                      >
+                                        <X className="w-4 h-4" />
+                                      </button>
+                                    )}
+                                    <button 
+                                      onClick={() => convertToTransaction(item)}
+                                      className="p-2 text-zinc-400 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-xl transition-all"
+                                      title="Converter em despesa permanente"
+                                    >
+                                      <RefreshCw className="w-4 h-4" />
+                                    </button>
+                                  </>
                                 )}
                                 <button 
                                   onClick={() => setEditingShoppingItem(item)}

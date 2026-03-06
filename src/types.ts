@@ -30,4 +30,5 @@ export interface ShoppingItem {
   is_purchased: boolean;
   category: string | null;
   created_at: string;
+  financial_type?: 'income' | 'expense' | null;
 }
