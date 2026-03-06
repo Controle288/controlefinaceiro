@@ -40,7 +40,7 @@ import {
   CartesianGrid, 
   Legend 
 } from 'recharts';
-import { User, Transaction, Category, ShoppingItem } from './types';
+import { User, Transaction, Category, ShoppingItem, RecurringCharge, RecurrencePeriod } from './types';
 import { supabase } from './lib/supabase';
 
 const DEFAULT_EXPENSE_CATEGORIES = ['Alimentação', 'Transporte', 'Moradia', 'Lazer', 'Saúde', 'Educação', 'Outros'];
@@ -74,9 +74,20 @@ export default function App() {
   const [showAddCategory, setShowAddCategory] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'transactions' | 'shopping'>('transactions');
+  const [activeTab, setActiveTab] = useState<'transactions' | 'shopping' | 'recurring'>('transactions');
 
-  // Shopping List State
+  // Recurring Charges State
+  const [recurringCharges, setRecurringCharges] = useState<RecurringCharge[]>([]);
+  const [newRecDescription, setNewRecDescription] = useState('');
+  const [newRecAmount, setNewRecAmount] = useState('');
+  const [newRecType, setNewRecType] = useState<'income' | 'expense'>('expense');
+  const [newRecCategory, setNewRecCategory] = useState('');
+  const [newRecStartDate, setNewRecStartDate] = useState(new Date().toISOString().split('T')[0]);
+  const [newRecDueDate, setNewRecDueDate] = useState('');
+  const [newRecPeriod, setNewRecPeriod] = useState<RecurrencePeriod>('Mensal');
+  const [newRecReminderDays, setNewRecReminderDays] = useState<number[]>([]);
+
+  // Filter State
   const [shoppingItems, setShoppingItems] = useState<ShoppingItem[]>([]);
   const [newShoppingName, setNewShoppingName] = useState('');
   const [newShoppingAmount, setNewShoppingAmount] = useState('');
@@ -92,6 +103,8 @@ export default function App() {
   // Filter State
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+  const [shoppingFilter, setShoppingFilter] = useState<'all' | 'pending' | 'purchased'>('all');
+  const [newCategoryType, setNewCategoryType] = useState<'income' | 'expense'>('expense');
 
   const months = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
   const years = useMemo(() => {
@@ -162,6 +175,7 @@ export default function App() {
       fetchTransactions();
       fetchCategories();
       fetchShoppingItems();
+      fetchRecurringCharges();
     }
   }, [user]);
 
@@ -284,7 +298,7 @@ export default function App() {
     if (!user || !newCategoryName.trim()) return;
     const { data, error } = await supabase
       .from('categories')
-      .insert({ user_id: user.id, name: newCategoryName.trim(), type })
+      .insert({ user_id: user.id, name: newCategoryName.trim(), type: newCategoryType })
       .select()
       .single();
 
@@ -437,6 +451,85 @@ export default function App() {
     const { error } = await supabase.from('shopping_items').delete().eq('id', id);
     if (!error) fetchShoppingItems();
     else console.error('Erro ao deletar item:', error);
+  };
+
+  // ── Recurring Charges Actions ─────────────────────────────────────────────
+  const fetchRecurringCharges = async () => {
+    if (!user) return;
+    const { data, error } = await supabase
+      .from('recurring_charges')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+
+    if (data) setRecurringCharges(data as RecurringCharge[]);
+    else if (error) console.error('Erro ao buscar cobranças recorrentes:', error);
+  };
+
+  const addRecurringCharge = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !newRecDescription || !newRecAmount || !newRecDueDate) return;
+
+    const { error } = await supabase.from('recurring_charges').insert({
+      user_id: user.id,
+      description: newRecDescription,
+      amount: parseFloat(newRecAmount),
+      type: newRecType,
+      category: newRecCategory || (newRecType === 'expense' ? allExpenseCategories[0] : allIncomeCategories[0]),
+      start_date: newRecStartDate,
+      due_date: newRecDueDate,
+      recurrence_period: newRecPeriod,
+      reminder_days: newRecReminderDays
+    });
+
+    if (!error) {
+      setNewRecDescription('');
+      setNewRecAmount('');
+      setNewRecDueDate('');
+      setNewRecReminderDays([]);
+      fetchRecurringCharges();
+      showSuccess('Cobrança recorrente adicionada!');
+    } else {
+      console.error('Erro ao adicionar cobrança recorrente:', error);
+    }
+  };
+
+  const deleteRecurringCharge = async (id: string) => {
+    const { error } = await supabase.from('recurring_charges').delete().eq('id', id);
+    if (!error) fetchRecurringCharges();
+    else console.error('Erro ao deletar cobrança recorrente:', error);
+  };
+
+  const postRecurringToTransaction = async (charge: RecurringCharge) => {
+    if (!user) return;
+    
+    const now = new Date();
+    const transactionDate = now.toISOString().split('T')[0];
+    
+    const { error: transError } = await supabase
+      .from('transactions')
+      .insert({
+        user_id: user.id,
+        description: `${charge.description} (Recorrente)`,
+        amount: charge.amount,
+        type: charge.type,
+        category: charge.category,
+        date: transactionDate,
+      });
+
+    if (!transError) {
+      // Opcionalmente atualizar last_processed_date
+      await supabase
+        .from('recurring_charges')
+        .update({ last_processed_date: transactionDate })
+        .eq('id', charge.id);
+        
+      fetchTransactions();
+      fetchRecurringCharges();
+      showSuccess('Adicionado às transações com sucesso!');
+    } else {
+      console.error('Erro ao converter recorrente para transação:', transError);
+    }
   };
 
   // ── Perfil ────────────────────────────────────────────────────────────────
@@ -729,12 +822,14 @@ export default function App() {
             {authView === 'login' && (
               <>
                 <button
+                  type="button"
                   onClick={() => { setAuthView('forgot-password'); setError(''); }}
                   className="block w-full text-sm text-zinc-500 hover:text-emerald-600 transition-colors"
                 >
                   Esqueci minha senha
                 </button>
                 <button
+                  type="button"
                   onClick={() => { setAuthView('signup'); setError(''); }}
                   className="text-sm text-zinc-600 hover:text-emerald-600 font-medium transition-colors"
                 >
@@ -745,6 +840,7 @@ export default function App() {
 
             {authView === 'signup' && (
               <button
+                type="button"
                 onClick={() => { setAuthView('login'); setError(''); }}
                 className="text-sm text-zinc-600 hover:text-emerald-600 font-medium transition-colors"
               >
@@ -754,6 +850,7 @@ export default function App() {
 
             {(authView === 'forgot-password' || authView === 'reset-password') && (
               <button
+                type="button"
                 onClick={() => { setAuthView('login'); setError(''); }}
                 className="text-sm text-zinc-600 hover:text-emerald-600 font-medium transition-colors"
               >
@@ -782,12 +879,14 @@ export default function App() {
             
             <nav className="flex items-center gap-0.5 bg-zinc-100 dark:bg-zinc-800 p-1 rounded-xl">
               <button
+                type="button"
                 onClick={() => setActiveTab('transactions')}
                 className={`px-3 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all whitespace-nowrap ${activeTab === 'transactions' ? 'bg-white dark:bg-zinc-700 shadow-sm text-emerald-600' : 'text-zinc-500 hover:text-zinc-700'}`}
               >
                 Finanças
               </button>
               <button
+                type="button"
                 onClick={() => setActiveTab('shopping')}
                 className={`px-3 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all whitespace-nowrap ${activeTab === 'shopping' ? 'bg-white dark:bg-zinc-700 shadow-sm text-emerald-600' : 'text-zinc-500 hover:text-zinc-700'}`}
               >
@@ -816,6 +915,7 @@ export default function App() {
               <span className="text-sm font-medium hidden sm:inline">{user.name}</span>
             </button>
             <button 
+              type="button"
               onClick={handleLogout}
               className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-full text-zinc-600 dark:text-zinc-400 transition-colors"
             >
@@ -1057,15 +1157,32 @@ export default function App() {
                         className={`mb-4 p-4 rounded-2xl border ${profileTheme === 'dark' ? 'bg-zinc-800 border-zinc-700' : 'bg-emerald-50 border-emerald-100'}`}
                       >
                         <div className="flex flex-col gap-4 mb-4">
+                          <div className="flex gap-2 mb-2">
+                             <button
+                               type="button"
+                               onClick={() => setNewCategoryType('expense')}
+                               className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border transition-all ${newCategoryType === 'expense' ? 'bg-red-500 text-white border-red-500' : 'bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-700 text-zinc-500'}`}
+                             >
+                               Nova Despesa
+                             </button>
+                             <button
+                               type="button"
+                               onClick={() => setNewCategoryType('income')}
+                               className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border transition-all ${newCategoryType === 'income' ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-700 text-zinc-500'}`}
+                             >
+                               Nova Receita
+                             </button>
+                          </div>
                           <div className="flex items-center gap-4">
                             <input
                               type="text"
-                              placeholder="Nome da Categoria"
+                              placeholder={`Nome da Categoria de ${newCategoryType === 'expense' ? 'Despesa' : 'Receita'}`}
                               className={`flex-1 px-4 py-2 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 border ${profileTheme === 'dark' ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-emerald-200'}`}
                               value={editingCategory ? editingCategory.name : newCategoryName}
                               onChange={(e) => editingCategory ? setEditingCategory({...editingCategory, name: e.target.value}) : setNewCategoryName(e.target.value)}
                             />
                             <button
+                              type="button"
                               onClick={editingCategory ? updateCategory : addCategory}
                               className="bg-emerald-500 text-white px-4 py-2 rounded-xl font-semibold hover:bg-emerald-600 transition-colors"
                             >
@@ -1073,13 +1190,14 @@ export default function App() {
                             </button>
                             {editingCategory && (
                               <button
+                                type="button"
                                 onClick={() => setEditingCategory(null)}
                                 className="bg-zinc-200 dark:bg-zinc-700 text-zinc-700 dark:text-zinc-200 px-4 py-2 rounded-xl font-semibold hover:opacity-80 transition-all"
                               >
                                 Cancelar
                               </button>
                             )}
-                            <button onClick={() => setShowAddCategory(false)} className="text-zinc-400">
+                            <button type="button" onClick={() => setShowAddCategory(false)} className="text-zinc-400">
                               <X className="w-5 h-5" />
                             </button>
                           </div>
@@ -1110,10 +1228,10 @@ export default function App() {
                                   <span className={c.type === 'income' ? 'text-emerald-500' : 'text-red-500'}>●</span>
                                   {c.name}
                                   <div className="flex items-center gap-1 ml-1 border-l pl-2 border-zinc-200 dark:border-zinc-700">
-                                    <button onClick={() => setEditingCategory(c)} className="text-zinc-400 hover:text-emerald-500 transition-colors">
+                                    <button type="button" onClick={() => setEditingCategory(c)} className="text-zinc-400 hover:text-emerald-500 transition-colors">
                                       <Edit2 className="w-3 h-3" />
                                     </button>
-                                    <button onClick={() => deleteCategory(c.id)} className="text-zinc-400 hover:text-red-500 transition-colors">
+                                    <button type="button" onClick={() => deleteCategory(c.id)} className="text-zinc-400 hover:text-red-500 transition-colors">
                                       <Trash2 className="w-3 h-3" />
                                     </button>
                                   </div>
@@ -1227,7 +1345,7 @@ export default function App() {
                                 </select>
                                 <div className="flex gap-2">
                                   <button type="submit" className="flex-1 bg-emerald-500 text-white rounded-lg text-sm font-bold">Salvar</button>
-                                  <button onClick={() => setEditingTransaction(null)} className={`p-2 rounded-lg ${profileTheme === 'dark' ? 'bg-zinc-800' : 'bg-zinc-100'}`}><X className="w-4 h-4" /></button>
+                                  <button onClick={() => setEditingTransaction(null)} type="button" className={`p-2 rounded-lg ${profileTheme === 'dark' ? 'bg-zinc-800' : 'bg-zinc-100'}`}><X className="w-4 h-4" /></button>
                                 </div>
                               </form>
                             ) : (
@@ -1252,12 +1370,14 @@ export default function App() {
                                   </span>
                                   <div className="flex items-center gap-1 sm:opacity-0 group-hover:opacity-100 transition-opacity">
                                     <button 
+                                      type="button"
                                       onClick={() => setEditingTransaction(t)}
                                       className={`p-2 rounded-lg transition-all ${profileTheme === 'dark' ? 'text-zinc-400 hover:text-emerald-500 hover:bg-emerald-500/10' : 'text-zinc-400 hover:text-emerald-500 hover:bg-emerald-50'}`}
                                     >
                                       <Edit2 className="w-4 h-4" />
                                     </button>
                                     <button 
+                                      type="button"
                                       onClick={() => deleteTransaction(t.id)}
                                       className={`p-2 rounded-lg transition-all ${profileTheme === 'dark' ? 'text-zinc-400 hover:text-red-500 hover:bg-red-500/10' : 'text-zinc-400 hover:text-red-500 hover:bg-red-50'}`}
                                     >
@@ -1340,7 +1460,7 @@ export default function App() {
                 </section>
               </aside>
             </motion.div>
-          ) : (
+          ) : activeTab === 'shopping' ? (
             <motion.div
               key="shopping"
               initial={{ opacity: 0, x: 20 }}
@@ -1387,19 +1507,53 @@ export default function App() {
                     <h3 className="text-lg font-bold">Itens na Lista</h3>
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Filtrar:</span>
-                      <button className="text-[10px] font-bold text-emerald-600">Todos</button>
+                      <button 
+                        type="button"
+                        onClick={() => setShoppingFilter('all')}
+                        className={`text-[10px] font-bold transition-colors ${shoppingFilter === 'all' ? 'text-emerald-600 underline' : 'text-zinc-500 hover:text-zinc-700'}`}
+                      >
+                        Todos
+                      </button>
+                      <button 
+                        type="button"
+                        onClick={() => setShoppingFilter('pending')}
+                        className={`text-[10px] font-bold transition-colors ${shoppingFilter === 'pending' ? 'text-emerald-600 underline' : 'text-zinc-500 hover:text-zinc-700'}`}
+                      >
+                        Pendentes
+                      </button>
+                      <button 
+                        type="button"
+                        onClick={() => setShoppingFilter('purchased')}
+                        className={`text-[10px] font-bold transition-colors ${shoppingFilter === 'purchased' ? 'text-emerald-600 underline' : 'text-zinc-500 hover:text-zinc-700'}`}
+                      >
+                        Comprados
+                      </button>
                     </div>
                   </div>
                   
                   <div className="space-y-3">
                     <AnimatePresence mode="popLayout">
-                    {shoppingItems.length === 0 ? (
-                      <div className={`text-center py-12 rounded-3xl border border-dashed ${profileTheme === 'dark' ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-zinc-300'}`}>
-                        <ShoppingBag className="w-12 h-12 text-zinc-300 mx-auto mb-3" />
-                        <p className="text-zinc-500 text-sm">Sua lista está vazia. Comece adicionando algo!</p>
-                      </div>
-                    ) : (
-                      shoppingItems.map((item) => (
+                    {(() => {
+                      const filtered = shoppingItems.filter(item => {
+                        if (shoppingFilter === 'pending') return !item.is_purchased;
+                        if (shoppingFilter === 'purchased') return item.is_purchased;
+                        return true;
+                      });
+
+                      if (filtered.length === 0) {
+                        return (
+                          <div className={`text-center py-12 rounded-3xl border border-dashed ${profileTheme === 'dark' ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-zinc-300'}`}>
+                            <ShoppingBag className="w-12 h-12 text-zinc-300 mx-auto mb-3" />
+                            <p className="text-zinc-500 text-sm">
+                              {shoppingFilter === 'all' && 'Sua lista está vazia. Comece adicionando algo!'}
+                              {shoppingFilter === 'pending' && 'Nenhum item pendente!'}
+                              {shoppingFilter === 'purchased' && 'Nenhum item comprado ainda.'}
+                            </p>
+                          </div>
+                        );
+                      }
+
+                      return filtered.map((item) => (
                         <motion.div
                           key={item.id}
                           layout
@@ -1426,7 +1580,7 @@ export default function App() {
                               />
                               <div className="flex gap-2">
                                 <button type="submit" className="flex-1 bg-emerald-500 text-white px-4 rounded-lg text-sm font-bold">Salvar</button>
-                                <button onClick={() => setEditingShoppingItem(null)} className={`p-2 rounded-lg ${profileTheme === 'dark' ? 'bg-zinc-800' : 'bg-zinc-100'}`}><X className="w-4 h-4" /></button>
+                                <button onClick={() => setEditingShoppingItem(null)} type="button" className={`p-2 rounded-lg ${profileTheme === 'dark' ? 'bg-zinc-800' : 'bg-zinc-100'}`}><X className="w-4 h-4" /></button>
                               </div>
                             </form>
                           ) : (
@@ -1466,6 +1620,7 @@ export default function App() {
                                     </button>
                                     {item.financial_type && (
                                       <button 
+                                        type="button"
                                         onClick={() => toggleFinancialType(item, null)}
                                         className="p-2 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-all"
                                         title="Remover marcação"
@@ -1474,6 +1629,7 @@ export default function App() {
                                       </button>
                                     )}
                                     <button 
+                                      type="button"
                                       onClick={() => convertToTransaction(item)}
                                       className="p-2 text-zinc-400 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-xl transition-all"
                                       title="Converter em despesa permanente"
@@ -1498,8 +1654,8 @@ export default function App() {
                             </>
                           )}
                         </motion.div>
-                      ))
-                    )}
+                      ));
+                    })()}
                     </AnimatePresence>
                   </div>
                 </div>
@@ -1545,6 +1701,207 @@ export default function App() {
                         <PlusCircle className="w-4 h-4 shrink-0" />
                         Dica: Converta itens em despesas reais usando o ícone <RefreshCw className="w-3 h-3 inline" /> para atualizar seu saldo!
                       </p>
+                    </div>
+                  </div>
+                </section>
+              </aside>
+            </motion.div>
+          ) : (
+            <motion.div
+              key="recurring"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="grid grid-cols-1 xl:grid-cols-[1fr_390px] gap-6 items-start"
+            >
+              <div className="space-y-6">
+                <section className={`p-6 rounded-3xl border shadow-sm ${profileTheme === 'dark' ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-black/5'}`}>
+                  <h3 className="text-lg font-bold flex items-center gap-2 mb-4">
+                    <RefreshCw className="w-5 h-5 text-emerald-500" />
+                    Nova Cobrança Recorrente
+                  </h3>
+                  <form onSubmit={addRecurringCharge} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] font-bold text-zinc-500 uppercase">Descrição</label>
+                      <input
+                        type="text"
+                        placeholder="Ex: Aluguel, Netflix"
+                        className={`px-4 py-2 border rounded-xl text-sm ${profileTheme === 'dark' ? 'bg-zinc-800 border-zinc-700' : 'bg-zinc-50 border-zinc-200'}`}
+                        value={newRecDescription}
+                        onChange={(e) => setNewRecDescription(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] font-bold text-zinc-500 uppercase">Valor (R$)</label>
+                      <input
+                        type="number"
+                        placeholder="0.00"
+                        step="0.01"
+                        className={`px-4 py-2 border rounded-xl text-sm ${profileTheme === 'dark' ? 'bg-zinc-800 border-zinc-700' : 'bg-zinc-50 border-zinc-200'}`}
+                        value={newRecAmount}
+                        onChange={(e) => setNewRecAmount(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] font-bold text-zinc-500 uppercase">Tipo</label>
+                      <select
+                        className={`px-4 py-2 border rounded-xl text-sm ${profileTheme === 'dark' ? 'bg-zinc-800 border-zinc-700' : 'bg-zinc-50 border-zinc-200'}`}
+                        value={newRecType}
+                        onChange={(e) => setNewRecType(e.target.value as 'income' | 'expense')}
+                      >
+                        <option value="expense">Despesa</option>
+                        <option value="income">Receita</option>
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] font-bold text-zinc-500 uppercase">Data de Cadastro (Início)</label>
+                      <input
+                        type="date"
+                        className={`px-4 py-2 border rounded-xl text-sm ${profileTheme === 'dark' ? 'bg-zinc-800 border-zinc-700' : 'bg-zinc-50 border-zinc-200'}`}
+                        value={newRecStartDate}
+                        onChange={(e) => setNewRecStartDate(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] font-bold text-zinc-500 uppercase">Data de Vencimento (Próximo)</label>
+                      <input
+                        type="date"
+                        className={`px-4 py-2 border rounded-xl text-sm ${profileTheme === 'dark' ? 'bg-zinc-800 border-zinc-700' : 'bg-zinc-50 border-zinc-200'}`}
+                        value={newRecDueDate}
+                        onChange={(e) => setNewRecDueDate(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] font-bold text-zinc-500 uppercase">Periodicidade</label>
+                      <select
+                        className={`px-4 py-2 border rounded-xl text-sm ${profileTheme === 'dark' ? 'bg-zinc-800 border-zinc-700' : 'bg-zinc-50 border-zinc-200'}`}
+                        value={newRecPeriod}
+                        onChange={(e) => setNewRecPeriod(e.target.value as RecurrencePeriod)}
+                      >
+                        <option value="Mensal">Mensal</option>
+                        <option value="Bimestral">Bimestral</option>
+                        <option value="Trimestral">Trimestral</option>
+                        <option value="Semestral">Semestral</option>
+                        <option value="Anual">Anual</option>
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-1 sm:col-span-2 lg:col-span-2">
+                       <label className="text-[10px] font-bold text-zinc-500 uppercase">Avisar quantos dias antes?</label>
+                       <div className="flex flex-wrap gap-2">
+                          {[1, 2, 3, 5, 7, 10, 15].map(day => (
+                            <button
+                              key={day}
+                              type="button"
+                              onClick={() => {
+                                if (newRecReminderDays.includes(day)) {
+                                  setNewRecReminderDays(newRecReminderDays.filter(d => d !== day));
+                                } else {
+                                  setNewRecReminderDays([...newRecReminderDays, day].sort((a,b) => a-b));
+                                }
+                              }}
+                              className={`px-3 py-1 rounded-lg text-xs font-bold transition-all border ${newRecReminderDays.includes(day) ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 border-transparent'}`}
+                            >
+                              {day} d
+                            </button>
+                          ))}
+                       </div>
+                    </div>
+                    <div className="flex items-end">
+                      <button
+                        type="submit"
+                        className="w-full bg-emerald-500 text-white py-2.5 rounded-xl font-bold hover:bg-emerald-600 transition-colors"
+                      >
+                        Cadastrar Recorrência
+                      </button>
+                    </div>
+                  </form>
+                </section>
+
+                <div className="space-y-4">
+                  <h3 className="text-lg font-bold">Cobranças Ativas</h3>
+                  <div className="space-y-3">
+                    {recurringCharges.length === 0 ? (
+                      <div className={`text-center py-12 rounded-3xl border border-dashed ${profileTheme === 'dark' ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-zinc-300'}`}>
+                        <RefreshCw className="w-12 h-12 text-zinc-300 mx-auto mb-3" />
+                        <p className="text-zinc-500 text-sm">Nenhuma cobrança recorrente cadastrada.</p>
+                      </div>
+                    ) : (
+                      recurringCharges.map((charge) => (
+                        <motion.div
+                          key={charge.id}
+                          layout
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className={`p-4 rounded-2xl border shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${profileTheme === 'dark' ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-black/5'}`}
+                        >
+                          <div className="flex items-center gap-4">
+                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${charge.type === 'income' ? 'bg-emerald-100 text-emerald-600' : 'bg-red-100 text-red-600'}`}>
+                              <RefreshCw className="w-5 h-5" />
+                            </div>
+                            <div>
+                              <p className="font-bold text-sm sm:text-base">{charge.description}</p>
+                              <div className="flex flex-wrap gap-2 mt-1">
+                                <span className={`text-[9px] px-2 py-0.5 rounded-full uppercase font-bold tracking-wider ${profileTheme === 'dark' ? 'bg-zinc-800 text-zinc-400' : 'bg-zinc-100 text-zinc-500'}`}>
+                                  {charge.recurrence_period}
+                                </span>
+                                <span className="text-[9px] px-2 py-0.5 rounded-full uppercase font-bold tracking-wider bg-zinc-100 dark:bg-zinc-800 text-zinc-500">
+                                  Vence: {new Date(charge.due_date + 'T12:00:00').toLocaleDateString('pt-BR')}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between sm:justify-end gap-4">
+                            <div className="text-right">
+                              <p className={`font-bold ${charge.type === 'income' ? 'text-emerald-600' : 'text-red-500'}`}>
+                                R$ {charge.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                              </p>
+                              {charge.last_processed_date && (
+                                <p className="text-[9px] text-zinc-400">Lançado em: {new Date(charge.last_processed_date + 'T12:00:00').toLocaleDateString('pt-BR')}</p>
+                              )}
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => postRecurringToTransaction(charge)}
+                                title="Lançar Transação Agora"
+                                className="p-2 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition-colors shadow-lg shadow-emerald-200 dark:shadow-none"
+                              >
+                                <Plus className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => deleteRecurringCharge(charge.id)}
+                                className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        </motion.div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <aside className="space-y-6 xl:sticky xl:top-[88px] order-first xl:order-last">
+                <section className={`p-6 rounded-3xl border shadow-sm ${profileTheme === 'dark' ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-black/5'}`}>
+                  <h3 className="text-sm font-bold flex items-center gap-2 mb-4">
+                    <Calendar className="w-5 h-5 text-emerald-500" />
+                    Informações
+                  </h3>
+                  <div className="space-y-4">
+                    <p className="text-xs text-zinc-500 leading-relaxed">
+                      As cobranças recorrentes ajudam você a não esquecer de contas fixas ou ganhos mensais.
+                    </p>
+                    <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/30">
+                       <p className="text-[10px] text-amber-700 dark:text-amber-400 font-medium">
+                         Dica: Ao clicar no botão <Plus className="w-3 h-3 inline" />, criaremos uma transação real no seu Dashboard com a data de hoje.
+                       </p>
                     </div>
                   </div>
                 </section>
