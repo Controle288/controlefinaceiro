@@ -417,7 +417,7 @@ export default function App() {
         user_id: user.id,
         description: `Compra: ${item.name}`,
         amount: item.amount || 0,
-        type: 'expense',
+        type: item.financial_type || 'expense',
         category: 'Outros', // Categoria padrão para conversões
         date: transactionDate,
       });
@@ -721,6 +721,23 @@ export default function App() {
 
   const balance = totalIncome - totalExpense;
 
+  const upcomingCharges = useMemo(() => {
+    const nextWeek = new Date();
+    nextWeek.setDate(nextWeek.getDate() + 7);
+    
+    return recurringCharges.filter(charge => {
+      const dueDate = new Date(charge.due_date + 'T12:00:00');
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      // Mostrar se vence nos próximos 7 dias e não foi processado hoje
+      const isSoon = dueDate >= today && dueDate <= nextWeek;
+      const alreadyProcessedToday = charge.last_processed_date === today.toISOString().split('T')[0];
+      
+      return isSoon && !alreadyProcessedToday;
+    }).sort((a, b) => new Date(a.due_date).getTime() - new Date(b.due_date).getTime());
+  }, [recurringCharges]);
+
   const COLORS = ['#ef4444', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316', '#10b981'];
 
   // ── Loading Screen ────────────────────────────────────────────────────────
@@ -907,6 +924,13 @@ export default function App() {
                 className={`px-3 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all whitespace-nowrap ${activeTab === 'shopping' ? 'bg-white dark:bg-zinc-700 shadow-sm text-emerald-600' : 'text-zinc-500 hover:text-zinc-700'}`}
               >
                 Lista
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('recurring')}
+                className={`px-3 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all whitespace-nowrap ${activeTab === 'recurring' ? 'bg-white dark:bg-zinc-700 shadow-sm text-emerald-600' : 'text-zinc-500 hover:text-zinc-700'}`}
+              >
+                Recorrência
               </button>
             </nav>
           </div>
@@ -1147,6 +1171,51 @@ export default function App() {
                     <h2 className="text-xl sm:text-2xl font-bold">R$ {totalExpense.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</h2>
                   </motion.div>
                 </div>
+
+                {/* Upcoming Bills Section */}
+                {upcomingCharges.length > 0 && (
+                  <section className={`p-6 rounded-3xl border shadow-sm ${profileTheme === 'dark' ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-black/5'}`}>
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-lg font-bold flex items-center gap-2">
+                        <Calendar className="w-5 h-5 text-amber-500" />
+                        Contas Próximas (7 dias)
+                      </h3>
+                      <button 
+                        onClick={() => setActiveTab('recurring')}
+                        className="text-xs font-semibold text-emerald-600 hover:text-emerald-700"
+                      >
+                        Ver Tudo
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {upcomingCharges.map(charge => (
+                        <div key={charge.id} className={`p-3 rounded-2xl border flex items-center justify-between gap-3 ${profileTheme === 'dark' ? 'bg-zinc-800 border-zinc-700' : 'bg-zinc-50 border-zinc-200'}`}>
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${charge.type === 'income' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>
+                              <RefreshCw className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-sm font-bold truncate">{charge.description}</p>
+                              <p className="text-[10px] text-zinc-500">Vence em: {new Date(charge.due_date + 'T12:00:00').toLocaleDateString('pt-BR')}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className={`text-sm font-bold ${charge.type === 'income' ? 'text-emerald-600' : 'text-red-500'}`}>
+                              R$ {charge.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                            </span>
+                            <button
+                              onClick={() => postRecurringToTransaction(charge)}
+                              className="p-1.5 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition-colors"
+                              title="Pagar/Lançar agora"
+                            >
+                              <Plus className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
 
                 {/* Add Transaction Form */}
                 <section className={`p-6 rounded-3xl border shadow-sm ${profileTheme === 'dark' ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-black/5'}`}>
@@ -1637,7 +1706,7 @@ export default function App() {
                                   {item.is_purchased ? <CheckCircle className="w-5 h-5 sm:w-6 sm:h-6 fill-emerald-500 text-white" /> : <Square className="w-5 h-5 sm:w-6 sm:h-6" />}
                                 </button>
                                 <div className="flex-1 min-w-0">
-                                  <p className={`font-semibold text-sm sm:text-base truncate ${item.is_purchased ? 'line-through text-zinc-500' : ''}`}>
+                                  <p className={`font-semibold text-sm sm:text-base truncate ${item.is_purchased ? 'line-through text-zinc-500' : item.financial_type === 'income' ? 'text-emerald-600' : item.financial_type === 'expense' ? 'text-red-500' : ''}`}>
                                     {item.name}
                                   </p>
                                   {item.amount && (
@@ -1908,14 +1977,15 @@ export default function App() {
                               )}
                             </div>
                             <div className="flex gap-2">
-                              <button
-                                type="button"
-                                onClick={() => postRecurringToTransaction(charge)}
-                                title="Lançar Transação Agora"
-                                className="p-2 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition-colors shadow-lg shadow-emerald-200 dark:shadow-none"
-                              >
-                                <Plus className="w-4 h-4" />
-                              </button>
+                                <button
+                                  type="button"
+                                  onClick={() => postRecurringToTransaction(charge)}
+                                  title="Lançar Transação Agora (Pagar)"
+                                  className="flex items-center gap-2 px-3 py-2 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition-colors shadow-lg shadow-emerald-200 dark:shadow-none"
+                                >
+                                  <Plus className="w-4 h-4" />
+                                  <span className="text-xs font-bold">Lançar</span>
+                                </button>
                               <button
                                 type="button"
                                 onClick={() => deleteRecurringCharge(charge.id)}
